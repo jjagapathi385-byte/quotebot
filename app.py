@@ -37,10 +37,20 @@ def save_tokens(updates):
     except Exception:
         pass
 
+# In-memory token cache to avoid refreshing on every call
+_token_cache = {'access_token': None, 'expires_at': 0}
+
 def get_fresh_token():
+    import time
     t = load_tokens()
     if not t.get('refresh_token'):
         raise Exception("Not connected to Zoho. Please complete setup first.")
+
+    # Use cached token if still valid (with 60s buffer)
+    if _token_cache['access_token'] and time.time() < _token_cache['expires_at'] - 60:
+        return _token_cache['access_token']
+
+    # Refresh token from Zoho
     r = requests.post('https://accounts.zoho.in/oauth/v2/token', data={
         'grant_type':    'refresh_token',
         'client_id':     CLIENT_ID,
@@ -50,6 +60,10 @@ def get_fresh_token():
     d = r.json()
     if 'access_token' not in d:
         raise Exception(f"Token refresh failed: {d}")
+
+    # Cache it for 55 minutes (Zoho tokens last 1 hour)
+    _token_cache['access_token'] = d['access_token']
+    _token_cache['expires_at']   = time.time() + 3300
     save_tokens({'access_token': d['access_token']})
     return d['access_token']
 
