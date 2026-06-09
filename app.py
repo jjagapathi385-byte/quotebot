@@ -141,9 +141,54 @@ def get_gst18_tax_id():
     return None
 
 def find_customer(name):
-    r = zh_get('/contacts', {'search_text': name, 'contact_type': 'customer'})
-    contacts = r.json().get('contacts', [])
-    return contacts[0] if contacts else None
+    # Fetch all customers and use AI to find best match
+    all_contacts = []
+    page = 1
+    while True:
+        r = zh_get('/contacts', {'contact_type': 'customer', 'page': page, 'per_page': 200})
+        data = r.json()
+        batch = data.get('contacts', [])
+        all_contacts.extend(batch)
+        if not data.get('page_context', {}).get('has_more_page', False):
+            break
+        page += 1
+
+    if not all_contacts:
+        return None
+
+    # Build name list for AI matching
+    names_list = [f"{i+1}. {c['contact_name']}" for i, c in enumerate(all_contacts)]
+    names_str  = "\n".join(names_list)
+
+    prompt = f"""You are matching a WhatsApp store name to a Zoho customer list.
+
+WhatsApp name: "{name}"
+
+Zoho customers:
+{names_str}
+
+Find the best matching customer number. Consider abbreviations, partial matches, location names.
+Reply with ONLY the number (e.g. "5") or "0" if no good match exists."""
+
+    r2 = requests.post(
+        'https://api.groq.com/openai/v1/chat/completions',
+        headers={'Authorization': f'Bearer {GROQ_KEY}', 'Content-Type': 'application/json'},
+        json={
+            'model': 'llama-3.3-70b-versatile',
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': 0
+        },
+        timeout=30
+    )
+    result = r2.json()['choices'][0]['message']['content'].strip()
+
+    try:
+        idx = int(''.join(filter(str.isdigit, result))) - 1
+        if 0 <= idx < len(all_contacts):
+            return all_contacts[idx]
+    except Exception:
+        pass
+    return None
 
 def find_item(name):
     r = zh_get('/items', {'search_text': name})
