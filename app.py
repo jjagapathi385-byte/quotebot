@@ -82,6 +82,9 @@ def zh_get(path, params=None):
 def zh_post(path, data):
     return requests.post(f'{ZOHO_BASE}{path}', headers=zh(), json=data)
 
+def zh_put(path, data):
+    return requests.put(f'{ZOHO_BASE}{path}', headers=zh(), json=data)
+
 # ── GEMINI PARSE ──────────────────────────────────────────────────────────────
 def parse_with_gemini(message):
     prompt = f"""You are a quotation parser for an Indian hardware/electrical supplies business.
@@ -227,10 +230,11 @@ def create_item(name, hsn_code, rate, tax_id):
 
 def update_estimate_prefix(customer_name):
     """Update Zoho estimate prefix to match customer name before creating."""
-    # Clean customer name for use as prefix (replace spaces with _)
-    clean_name = customer_name.upper().replace(' ', '_')
+    # Use customer name exactly as stored in Zoho (already formatted e.g. KFC-SURYAPET)
+    clean_name = customer_name.strip().upper().replace(' ', '_')
     prefix = f"{clean_name}-QT-"
-    zh_post('/settings/estimates', {"estimate_prefix": prefix})
+    # Zoho requires PUT for settings updates
+    zh_put('/settings/estimates', {"estimate_prefix": prefix})
 
 def create_estimate(customer_id, customer_name, line_items):
     # Set prefix to customer name before creating so number format is correct
