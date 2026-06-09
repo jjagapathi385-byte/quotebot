@@ -11,6 +11,7 @@ app = Flask(__name__)
 CLIENT_ID     = os.environ.get('ZOHO_CLIENT_ID', '')
 CLIENT_SECRET = os.environ.get('ZOHO_CLIENT_SECRET', '')
 GEMINI_KEY    = os.environ.get('GEMINI_API_KEY', '')
+GROQ_KEY      = os.environ.get('GROQ_API_KEY', '')
 ZOHO_BASE     = "https://invoice.zoho.in/api/v3"
 TOKEN_FILE    = "zoho_tokens.json"
 PORT          = int(os.environ.get('PORT', 5000))
@@ -104,15 +105,23 @@ Return this exact JSON:
 ONLY return the JSON. Nothing else."""
 
     r = requests.post(
-        f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={GEMINI_KEY}',
-        json={"contents": [{"parts": [{"text": prompt}]}]},
+        'https://api.groq.com/openai/v1/chat/completions',
+        headers={
+            'Authorization': f'Bearer {GROQ_KEY}',
+            'Content-Type': 'application/json'
+        },
+        json={
+            'model': 'llama-3.3-70b-versatile',
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': 0.1
+        },
         timeout=30
     )
     d = r.json()
     if 'error' in d:
-        raise Exception(f"Gemini error: {d['error']['message']}")
+        raise Exception(f"Groq error: {d['error']['message']}")
 
-    raw = d['candidates'][0]['content']['parts'][0]['text'].strip()
+    raw = d['choices'][0]['message']['content'].strip()
     if '```' in raw:
         parts = raw.split('```')
         raw = parts[1] if len(parts) > 1 else parts[0]
@@ -179,7 +188,7 @@ def index():
 def status():
     t = load_tokens()
     configured = bool(t.get('refresh_token'))
-    creds_ok   = bool(CLIENT_ID and CLIENT_SECRET and GEMINI_KEY)
+    creds_ok   = bool(CLIENT_ID and CLIENT_SECRET and GROQ_KEY)
     return jsonify({'configured': configured, 'creds_ok': creds_ok, 'is_railway': IS_RAILWAY})
 
 @app.route('/setup', methods=['POST'])
