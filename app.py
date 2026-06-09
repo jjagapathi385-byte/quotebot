@@ -99,11 +99,24 @@ Message:
 Rules:
 1. Extract customer/store name from the first line or header
 2. For each item: name, quantity (default 1), unit_price (if total given for multiple qty, divide to get unit price)
-3. Assign the most accurate 8-digit HSN code. Common ones:
+3. IMPORTANT - Correct item names: fix typos, expand abbreviations, use proper industry names.
+   Examples:
+   - "brazing rad pipe" → "Brazing Rod Pipe"
+   - "let machine work" → "Lathe Machine Work"
+   - "magnitor" → "Magnetron"
+   - "fevi bond" → "Fevibond Adhesive"
+   - "LPG gas tarch" → "LPG Gas Torch"
+   - "R 32 gas" → "R32 Refrigerant Gas"
+   - "led lt" → "LED Light"
+   - "ac servic" → "AC Service"
+   Always use proper English, correct spelling, full words.
+4. Assign the most accurate 8-digit HSN code. Common ones:
    LED lights/lamps=94054090, Tape=39199090, Adhesive/Fevicol/Fevibond=35069900,
    PVC pipe=39172300, Wire/cable=85444290, Switch/socket=85363010, MCB=85362000,
    Paint=32089090, Cement=25232900, Steel/iron=72142000, Screws/bolts=73181500,
-   Plywood=44121000, Glass=70051000, Fan=84145100, Pump=84137090
+   Plywood=44121000, Glass=70051000, Fan=84145100, Pump=84137090,
+   Refrigerant gas=38249099, Lathe/machine work=84589900, Magnetron=85402000,
+   Brazing rod=83112000, Gas torch=84689900, Service charges=998719
    For anything else use your best judgment.
 
 Return this exact JSON:
@@ -208,9 +221,53 @@ Reply with ONLY the number (e.g. "5") or "0" if no good match exists."""
     return None
 
 def find_item(name):
-    r = zh_get('/items', {'search_text': name})
-    items = r.json().get('items', [])
-    return items[0] if items else None
+    # Fetch all items and use AI to find best match
+    all_items = []
+    page = 1
+    while True:
+        r = zh_get('/items', {'page': page, 'per_page': 200})
+        data = r.json()
+        batch = data.get('items', [])
+        all_items.extend(batch)
+        if not data.get('page_context', {}).get('has_more_page', False):
+            break
+        page += 1
+
+    if not all_items:
+        return None
+
+    names_list = [f"{i+1}. {itm['name']}" for i, itm in enumerate(all_items)]
+    names_str  = "\n".join(names_list)
+
+    prompt = f"""Match this item name to the closest item in a Zoho inventory list.
+
+Item to find: "{name}"
+
+Zoho items:
+{names_str}
+
+Find the best matching item number considering abbreviations, alternate names, and partial matches.
+Reply with ONLY the number (e.g. "5") or "0" if no good match exists (similarity less than 70%)."""
+
+    r2 = requests.post(
+        'https://api.groq.com/openai/v1/chat/completions',
+        headers={'Authorization': f'Bearer {GROQ_KEY}', 'Content-Type': 'application/json'},
+        json={
+            'model': 'llama-3.3-70b-versatile',
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': 0
+        },
+        timeout=30
+    )
+    result = r2.json()['choices'][0]['message']['content'].strip()
+
+    try:
+        idx = int(''.join(filter(str.isdigit, result))) - 1
+        if 0 <= idx < len(all_items):
+            return all_items[idx]
+    except Exception:
+        pass
+    return None
 
 def create_item(name, hsn_code, rate, tax_id):
     payload = {
