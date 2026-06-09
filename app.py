@@ -7,10 +7,10 @@ from threading import Timer
 
 app = Flask(__name__)
 
-# ── CREDENTIALS ───────────────────────────────────────────────────────────────
-CLIENT_ID     = "1000.VGIRMAYCVS4GNSNM2J4EPXE1969EGL"
-CLIENT_SECRET = "533ed1d019d11f8723f6c4605ce9c3653dfb131a93"
-GEMINI_KEY    = "AQ.Ab8RN6I9L1wCOp6DI_-gG92m2JJWibaN4Jk-oZ7-pBt06bYP_w"
+# ── CREDENTIALS (all from environment variables) ──────────────────────────────
+CLIENT_ID     = os.environ.get('ZOHO_CLIENT_ID', '')
+CLIENT_SECRET = os.environ.get('ZOHO_CLIENT_SECRET', '')
+GEMINI_KEY    = os.environ.get('GEMINI_API_KEY', '')
 ZOHO_BASE     = "https://invoice.zoho.in/api/v3"
 TOKEN_FILE    = "zoho_tokens.json"
 PORT          = int(os.environ.get('PORT', 5000))
@@ -18,12 +18,10 @@ IS_RAILWAY    = bool(os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('RA
 
 # ── TOKEN MANAGEMENT ──────────────────────────────────────────────────────────
 def load_tokens():
-    # On Railway: read from environment variables
     env_refresh = os.environ.get('ZOHO_REFRESH_TOKEN', '')
     env_org     = os.environ.get('ZOHO_ORG_ID', '')
     if env_refresh:
         return {'refresh_token': env_refresh, 'org_id': env_org}
-    # Local: read from file
     if os.path.exists(TOKEN_FILE):
         with open(TOKEN_FILE) as f:
             return json.load(f)
@@ -36,7 +34,7 @@ def save_tokens(updates):
         with open(TOKEN_FILE, 'w') as f:
             json.dump(t, f, indent=2)
     except Exception:
-        pass  # On Railway filesystem may be read-only
+        pass
 
 def get_fresh_token():
     t = load_tokens()
@@ -171,14 +169,15 @@ def index():
 @app.route('/status')
 def status():
     t = load_tokens()
-    return jsonify({'configured': bool(t.get('refresh_token')), 'is_railway': IS_RAILWAY})
+    configured = bool(t.get('refresh_token'))
+    creds_ok   = bool(CLIENT_ID and CLIENT_SECRET and GEMINI_KEY)
+    return jsonify({'configured': configured, 'creds_ok': creds_ok, 'is_railway': IS_RAILWAY})
 
 @app.route('/setup', methods=['POST'])
 def setup():
     code = request.json.get('auth_code', '').strip()
     if not code:
         return jsonify({'success': False, 'error': 'Auth code is empty.'})
-
     r = requests.post('https://accounts.zoho.in/oauth/v2/token', data={
         'grant_type': 'authorization_code',
         'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET,
@@ -187,22 +186,18 @@ def setup():
     d = r.json()
     if 'refresh_token' not in d:
         return jsonify({'success': False, 'error': d})
-
     save_tokens(d)
-
-    org_r = requests.get(f'{ZOHO_BASE}/organizations',
-                         headers={'Authorization': f'Zoho-oauthtoken {d["access_token"]}'})
-    orgs = org_r.json().get('organizations', [])
+    org_r    = requests.get(f'{ZOHO_BASE}/organizations',
+                            headers={'Authorization': f'Zoho-oauthtoken {d["access_token"]}'})
+    orgs     = org_r.json().get('organizations', [])
     org_name = 'Unknown'
-    org_id = ''
+    org_id   = ''
     if orgs:
-        org_id = orgs[0]['organization_id']
+        org_id   = orgs[0]['organization_id']
         org_name = orgs[0].get('name', 'Unknown')
         save_tokens({'org_id': org_id})
-
     return jsonify({
-        'success': True,
-        'org': org_name,
+        'success': True, 'org': org_name,
         'railway_vars': {
             'ZOHO_REFRESH_TOKEN': d['refresh_token'],
             'ZOHO_ORG_ID': org_id
@@ -215,32 +210,27 @@ def process():
     if not message:
         return jsonify({'status': 'error', 'message': 'No message provided.'})
     try:
-        parsed = parse_with_gemini(message)
+        parsed        = parse_with_gemini(message)
         customer_name = parsed.get('customer_name', '').strip()
-        items = parsed.get('items', [])
-
+        items         = parsed.get('items', [])
         if not customer_name:
             return jsonify({'status': 'error', 'message': 'Could not detect customer name.'})
-
         customer = find_customer(customer_name)
         if not customer:
             return jsonify({
                 'status': 'customer_not_found',
                 'parsed_name': customer_name,
-                'message': f"Customer '{customer_name}' not found in Zoho Invoice. Please add them first and try again."
+                'message': f"Customer '{customer_name}' not found in Zoho Invoice. Please add them first."
             })
-
-        tax_id = get_gst18_tax_id()
-        line_items = []
+        tax_id        = get_gst18_tax_id()
+        line_items    = []
         new_items_log = []
-
         for item in items:
-            name = item.get('name', '').strip()
-            qty = float(item.get('quantity', 1))
-            unit_price = float(item.get('unit_price', 0))
-            hsn = item.get('hsn_code', '00000000')
+            name        = item.get('name', '').strip()
+            qty         = float(item.get('quantity', 1))
+            unit_price  = float(item.get('unit_price', 0))
+            hsn         = item.get('hsn_code', '00000000')
             marked_price = round(unit_price * 1.10, 2)
-
             existing = find_item(name)
             if existing:
                 item_id = existing['item_id']
@@ -248,16 +238,13 @@ def process():
                 created = create_item(name, hsn, marked_price, tax_id)
                 item_id = created.get('item_id', '')
                 new_items_log.append({'name': name, 'hsn': hsn, 'rate': marked_price})
-
             line_items.append({
                 "item_id": item_id, "name": name,
                 "quantity": qty, "rate": marked_price,
                 **({"tax_id": tax_id} if tax_id else {})
             })
-
         result = create_estimate(customer['contact_id'], line_items)
-        est = result.get('estimate')
-
+        est    = result.get('estimate')
         if est:
             return jsonify({
                 'status': 'success',
@@ -269,7 +256,6 @@ def process():
             })
         else:
             return jsonify({'status': 'error', 'message': f"Zoho error: {result}"})
-
     except json.JSONDecodeError as e:
         return jsonify({'status': 'error', 'message': f'Parse error: {e}'})
     except Exception as e:
@@ -282,28 +268,15 @@ HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="QuoteBot">
 <title>QuoteBot</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-  :root{
-    --bg:#F7F8FC;--surface:#fff;--border:#E4E7EF;
-    --ink:#111827;--muted:#6B7280;
-    --accent:#4F46E5;--accent-h:#4338CA;
-    --green:#059669;--amber:#D97706;--red:#DC2626;
-    --r:14px;
-  }
+  :root{--bg:#F7F8FC;--surface:#fff;--border:#E4E7EF;--ink:#111827;--muted:#6B7280;--accent:#4F46E5;--accent-h:#4338CA;--green:#059669;--r:14px}
   html{-webkit-text-size-adjust:100%}
-  body{
-    font-family:'Inter',system-ui,sans-serif;
-    background:var(--bg);min-height:100vh;
-    display:flex;align-items:flex-start;justify-content:center;
-    padding:20px 16px 40px;
-  }
+  body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:20px 16px 40px}
   .shell{width:100%;max-width:520px}
-
   .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
   .brand{display:flex;align-items:center;gap:10px}
   .brand-icon{width:38px;height:38px;background:var(--accent);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:19px}
@@ -311,58 +284,34 @@ HTML = """<!DOCTYPE html>
   .brand-sub{font-size:11px;color:var(--muted);margin-top:1px}
   .pill{font-size:11px;font-weight:700;padding:4px 12px;border-radius:20px;background:#FEF3C7;color:#92400E;border:1px solid #FCD34D;transition:all .3s;white-space:nowrap}
   .pill.ok{background:#D1FAE5;color:#065F46;border-color:#6EE7B7}
-
   .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:22px;margin-bottom:12px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
   .card-title{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:14px}
-
   .setup-steps{background:#EEF2FF;border:1px solid #C7D2FE;border-radius:10px;padding:14px;font-size:13px;color:#3730A3;line-height:1.75;margin-bottom:14px}
   .setup-steps a{color:#4F46E5;font-weight:600}
   .setup-steps code{font-family:'JetBrains Mono',monospace;background:#C7D2FE;padding:1px 6px;border-radius:4px;font-size:11px}
-
   .input-row{display:flex;gap:8px}
   input[type=text]{flex:1;border:1.5px solid var(--border);border-radius:10px;padding:11px 13px;font-size:13px;font-family:'JetBrains Mono',monospace;outline:none;transition:border .2s;color:var(--ink);min-width:0}
   input[type=text]:focus{border-color:var(--accent)}
-
-  .btn-connect{background:var(--green);color:#fff;border:none;border-radius:10px;padding:11px 16px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;transition:background .2s;-webkit-tap-highlight-color:transparent}
+  .btn-connect{background:var(--green);color:#fff;border:none;border-radius:10px;padding:11px 16px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;-webkit-tap-highlight-color:transparent}
   .btn-connect:active{background:#047857}
-
   .railway-box{background:#FFF7ED;border:1px solid #FED7AA;border-radius:10px;padding:14px;margin-top:14px;display:none}
   .railway-box-title{font-size:12px;font-weight:700;color:#C2410C;margin-bottom:10px;text-transform:uppercase;letter-spacing:.04em}
-  .railway-var{background:#fff;border:1px solid #FED7AA;border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer;transition:background .15s}
+  .railway-var{background:#fff;border:1px solid #FED7AA;border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer}
   .railway-var:active{background:#FFF7ED}
   .railway-var-label{font-size:10px;font-weight:700;color:#9A3412;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px}
   .railway-var-val{font-family:'JetBrains Mono',monospace;font-size:11px;color:#1C1917;word-break:break-all}
   .railway-note{font-size:12px;color:#92400E;line-height:1.6;margin-top:10px}
-
-  label{display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:8px}
-  textarea{
-    width:100%;border:1.5px solid var(--border);border-radius:10px;
-    padding:13px;font-size:14px;font-family:'JetBrains Mono',monospace;
-    line-height:1.7;resize:vertical;min-height:150px;outline:none;
-    color:var(--ink);transition:border .2s;
-    -webkit-appearance:none;
-  }
+  textarea{width:100%;border:1.5px solid var(--border);border-radius:10px;padding:13px;font-size:14px;font-family:'JetBrains Mono',monospace;line-height:1.7;resize:vertical;min-height:150px;outline:none;color:var(--ink);transition:border .2s;-webkit-appearance:none}
   textarea:focus{border-color:var(--accent)}
   textarea::placeholder{color:#9CA3AF}
-
-  .btn-main{
-    width:100%;background:var(--accent);color:#fff;border:none;
-    border-radius:10px;padding:15px;font-size:15px;font-weight:700;
-    cursor:pointer;margin-top:12px;
-    display:flex;align-items:center;justify-content:center;gap:8px;
-    transition:background .2s;
-    -webkit-tap-highlight-color:transparent;
-    touch-action:manipulation;
-  }
+  .btn-main{width:100%;background:var(--accent);color:#fff;border:none;border-radius:10px;padding:15px;font-size:15px;font-weight:700;cursor:pointer;margin-top:12px;display:flex;align-items:center;justify-content:center;gap:8px;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
   .btn-main:active:not(:disabled){background:var(--accent-h)}
   .btn-main:disabled{background:#9CA3AF;cursor:not-allowed}
-
   .loader{display:none;text-align:center;padding:16px 0 4px;color:var(--muted);font-size:13px}
   .dots span{display:inline-block;width:6px;height:6px;background:var(--accent);border-radius:50%;margin:0 2px;animation:bounce .9s infinite ease-in-out}
   .dots span:nth-child(2){animation-delay:.15s}
   .dots span:nth-child(3){animation-delay:.3s}
   @keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-6px)}}
-
   .result{display:none;border-radius:10px;padding:16px;margin-top:14px;font-size:14px;line-height:1.7}
   .result.success{background:#ECFDF5;border:1.5px solid #A7F3D0}
   .result.warning{background:#FFFBEB;border:1.5px solid #FDE68A}
@@ -378,11 +327,11 @@ HTML = """<!DOCTYPE html>
   .new-tag .hsn{color:#9CA3AF;font-family:'JetBrains Mono',monospace;font-size:10px}
   .warn-msg{color:#92400E;font-size:13px;line-height:1.6}
   .err-msg{color:#7F1D1D;font-size:12px;font-family:'JetBrains Mono',monospace;line-height:1.5;word-break:break-all}
+  .alert-box{background:#FEF2F2;border:1px solid #FECACA;border-radius:10px;padding:14px;font-size:13px;color:#7F1D1D;line-height:1.6;margin-bottom:12px;display:none}
 </style>
 </head>
 <body>
 <div class="shell">
-
   <div class="header">
     <div class="brand">
       <div class="brand-icon">⚡</div>
@@ -394,7 +343,11 @@ HTML = """<!DOCTYPE html>
     <span class="pill" id="pill">Checking…</span>
   </div>
 
-  <!-- Setup Card -->
+  <div class="alert-box" id="creds-alert">
+    ⚠️ <strong>Environment variables missing.</strong><br>
+    Please set <code>ZOHO_CLIENT_ID</code>, <code>ZOHO_CLIENT_SECRET</code>, and <code>GEMINI_API_KEY</code> in Railway Variables.
+  </div>
+
   <div class="card" id="setup-card" style="display:none">
     <div class="card-title">🔐 One-time Zoho Setup</div>
     <div class="setup-steps">
@@ -404,27 +357,23 @@ HTML = """<!DOCTYPE html>
       4. Paste the code below → Connect
     </div>
     <div class="input-row">
-      <input type="text" id="auth-input" placeholder="1000.xxxx…" autocomplete="off" autocorrect="off" spellcheck="false" />
+      <input type="text" id="auth-input" placeholder="1000.xxxx…" autocomplete="off" autocorrect="off" spellcheck="false"/>
       <button class="btn-connect" onclick="doSetup()">Connect ✓</button>
     </div>
-    <!-- Railway vars shown after setup -->
     <div class="railway-box" id="railway-box">
-      <div class="railway-box-title">🚂 Save these to Railway Environment Variables</div>
+      <div class="railway-box-title">🚂 Add these to Railway Variables</div>
       <div class="railway-var" onclick="copyVal('rv-refresh')">
-        <div class="railway-var-label">ZOHO_REFRESH_TOKEN &nbsp;(tap to copy)</div>
+        <div class="railway-var-label">ZOHO_REFRESH_TOKEN (tap to copy)</div>
         <div class="railway-var-val" id="rv-refresh">—</div>
       </div>
       <div class="railway-var" onclick="copyVal('rv-org')">
-        <div class="railway-var-label">ZOHO_ORG_ID &nbsp;(tap to copy)</div>
+        <div class="railway-var-label">ZOHO_ORG_ID (tap to copy)</div>
         <div class="railway-var-val" id="rv-org">—</div>
       </div>
-      <div class="railway-note">
-        In Railway dashboard → your service → <strong>Variables</strong> → add these two. After adding, redeploy once.
-      </div>
+      <div class="railway-note">Railway dashboard → your service → <strong>Variables</strong> → add both → Redeploy once.</div>
     </div>
   </div>
 
-  <!-- Main Card -->
   <div class="card">
     <div class="card-title">📋 New Quotation</div>
     <textarea id="msg" placeholder="Paste your WhatsApp message here...
@@ -435,19 +384,15 @@ AMR store quotation
 2.3mm tape s 2 no 600
 3.fevi bond -3no 250
 Total = 4000"></textarea>
-
     <button class="btn-main" id="btn" onclick="processMessage()">
       <span>Create Quotation in Zoho</span><span>→</span>
     </button>
-
     <div class="loader" id="loader">
       <div class="dots"><span></span><span></span><span></span></div>
       <div style="margin-top:8px">Parsing &amp; creating quotation…</div>
     </div>
-
     <div class="result" id="result"></div>
   </div>
-
 </div>
 <script>
 async function checkStatus(){
@@ -455,11 +400,12 @@ async function checkStatus(){
     const r=await fetch('/status'),d=await r.json();
     const pill=document.getElementById('pill');
     const sc=document.getElementById('setup-card');
+    const ca=document.getElementById('creds-alert');
+    if(!d.creds_ok){ca.style.display='block';pill.textContent='⚠️ Config missing';return}
     if(d.configured){pill.textContent='✅ Connected';pill.className='pill ok';sc.style.display='none'}
     else{pill.textContent='⚠️ Setup needed';sc.style.display='block'}
   }catch(e){document.getElementById('pill').textContent='⚠️ Offline'}
 }
-
 async function doSetup(){
   const code=document.getElementById('auth-input').value.trim();
   if(!code){alert('Paste the auth code first.');return}
@@ -469,32 +415,25 @@ async function doSetup(){
     const r=await fetch('/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({auth_code:code})});
     const d=await r.json();
     if(d.success){
-      // Show Railway vars
       if(d.railway_vars){
         document.getElementById('rv-refresh').textContent=d.railway_vars.ZOHO_REFRESH_TOKEN;
         document.getElementById('rv-org').textContent=d.railway_vars.ZOHO_ORG_ID;
         document.getElementById('railway-box').style.display='block';
       }
       checkStatus();
-    }else{
-      alert('❌ Failed: '+JSON.stringify(d.error,null,2));
-    }
+    }else{alert('❌ Failed: '+JSON.stringify(d.error,null,2))}
   }catch(e){alert('Error: '+e.message)}
   btn.disabled=false;btn.textContent='Connect ✓';
 }
-
 function copyVal(id){
   const val=document.getElementById(id).textContent;
   if(val==='—')return;
   navigator.clipboard.writeText(val).then(()=>alert('Copied!')).catch(()=>{
-    // fallback
-    const ta=document.createElement('textarea');
-    ta.value=val;document.body.appendChild(ta);ta.select();
-    document.execCommand('copy');document.body.removeChild(ta);
-    alert('Copied!');
+    const ta=document.createElement('textarea');ta.value=val;
+    document.body.appendChild(ta);ta.select();document.execCommand('copy');
+    document.body.removeChild(ta);alert('Copied!');
   });
 }
-
 async function processMessage(){
   const msg=document.getElementById('msg').value.trim();
   if(!msg){alert('Paste a WhatsApp message first.');return}
@@ -546,7 +485,6 @@ if __name__ == '__main__':
         print(f"  Running on Railway · Port {PORT}")
     else:
         print(f"  Local: http://localhost:{PORT}")
-        print("  Press Ctrl+C to stop")
         Timer(1.5, open_browser).start()
     print()
     app.run(debug=False, host='0.0.0.0', port=PORT, use_reloader=False)
