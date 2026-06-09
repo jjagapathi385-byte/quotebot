@@ -228,18 +228,28 @@ def create_item(name, hsn_code, rate, tax_id):
         raise Exception(f"Item creation failed: {resp}")
     return item
 
-def update_estimate_prefix(customer_name):
-    """Update Zoho estimate prefix to match customer name before creating."""
-    # Use customer name exactly as stored in Zoho (already formatted e.g. KFC-SURYAPET)
-    clean_name = customer_name.strip().upper().replace(' ', '_')
-    prefix = f"{clean_name}-QT-"
-    # Zoho requires PUT for settings updates
-    zh_put('/settings/estimates', {"estimate_prefix": prefix})
+def get_next_estimate_number():
+    """Fetch the next auto-increment number from Zoho settings."""
+    try:
+        r = zh_get('/settings/estimates')
+        d = r.json()
+        # Try different possible field names
+        settings = d.get('estimate_settings', d)
+        next_num = (settings.get('next_number') or
+                    settings.get('estimate_next_number') or
+                    settings.get('nextNumber') or 1)
+        return int(str(next_num).strip())
+    except Exception:
+        return None
 
 def create_estimate(customer_id, customer_name, line_items):
-    # Set prefix to customer name before creating so number format is correct
-    update_estimate_prefix(customer_name)
-    r = zh_post('/estimates', {"customer_id": customer_id, "line_items": line_items})
+    # Build custom estimate number: CUSTOMER-QT-000139
+    clean_name  = customer_name.strip().upper().replace(' ', '_')
+    next_num    = get_next_estimate_number()
+    payload     = {"customer_id": customer_id, "line_items": line_items}
+    if next_num:
+        payload["estimate_number"] = f"{clean_name}-QT-{str(next_num).zfill(6)}"
+    r = zh_post('/estimates', payload)
     return r.json()
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────
