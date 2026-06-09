@@ -157,7 +157,16 @@ def create_item(name, hsn_code, rate, tax_id):
         raise Exception(f"Item creation failed: {resp}")
     return item
 
-def create_estimate(customer_id, line_items):
+def update_estimate_prefix(customer_name):
+    """Update Zoho estimate prefix to match customer name before creating."""
+    # Clean customer name for use as prefix (replace spaces with _)
+    clean_name = customer_name.upper().replace(' ', '_')
+    prefix = f"{clean_name}-QT-"
+    zh_post('/settings/estimates', {"estimate_prefix": prefix})
+
+def create_estimate(customer_id, customer_name, line_items):
+    # Set prefix to customer name before creating so number format is correct
+    update_estimate_prefix(customer_name)
     r = zh_post('/estimates', {"customer_id": customer_id, "line_items": line_items})
     return r.json()
 
@@ -243,7 +252,7 @@ def process():
                 "quantity": qty, "rate": marked_price,
                 **({"tax_id": tax_id} if tax_id else {})
             })
-        result = create_estimate(customer['contact_id'], line_items)
+        result = create_estimate(customer['contact_id'], customer.get('contact_name', customer_name), line_items)
         est    = result.get('estimate')
         if est:
             return jsonify({
