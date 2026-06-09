@@ -213,6 +213,46 @@ def setup():
         }
     })
 
+@app.route('/get-tokens')
+def get_tokens():
+    t = load_tokens()
+    refresh = t.get('refresh_token', '')
+    org_id  = t.get('org_id', '')
+    if not refresh:
+        return "<h2 style='font-family:sans-serif;padding:24px'>No tokens found. Please complete Zoho setup first.</h2>"
+    return render_template_string("""<!DOCTYPE html><html><head>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <style>
+      body{font-family:sans-serif;padding:24px;background:#f7f8fc;max-width:540px;margin:0 auto}
+      h2{color:#111;margin-bottom:6px}p{color:#666;font-size:13px;margin-bottom:20px}
+      .box{background:#fff;border:1.5px solid #e4e7ef;border-radius:12px;padding:16px;margin-bottom:14px}
+      .label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#6b7280;margin-bottom:6px}
+      .val{font-family:monospace;font-size:12px;word-break:break-all;color:#111;background:#f3f4f6;padding:10px;border-radius:8px}
+      button{width:100%;background:#4f46e5;color:#fff;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;margin-top:8px}
+    </style></head><body>
+    <h2>🚂 Railway Variables</h2>
+    <p>Copy these two values and add them to Railway → Variables tab. Do this now before redeploying!</p>
+    <div class="box">
+      <div class="label">ZOHO_REFRESH_TOKEN</div>
+      <div class="val" id="r">{{ refresh }}</div>
+      <button onclick="cp('r','ZOHO_REFRESH_TOKEN')">Copy</button>
+    </div>
+    <div class="box">
+      <div class="label">ZOHO_ORG_ID</div>
+      <div class="val" id="o">{{ org_id }}</div>
+      <button onclick="cp('o','ZOHO_ORG_ID')">Copy</button>
+    </div>
+    <script>
+    function cp(id,name){
+      const v=document.getElementById(id).textContent;
+      navigator.clipboard.writeText(v).then(()=>alert(name+' copied!')).catch(()=>{
+        const t=document.createElement('textarea');t.value=v;
+        document.body.appendChild(t);t.select();document.execCommand('copy');
+        document.body.removeChild(t);alert(name+' copied!');
+      });
+    }
+    </script></body></html>""", refresh=refresh, org_id=org_id)
+
 @app.route('/process', methods=['POST'])
 def process():
     message = request.json.get('message', '').strip()
@@ -410,8 +450,13 @@ async function checkStatus(){
     const pill=document.getElementById('pill');
     const sc=document.getElementById('setup-card');
     const ca=document.getElementById('creds-alert');
+    const rb=document.getElementById('railway-box');
     if(!d.creds_ok){ca.style.display='block';pill.textContent='⚠️ Config missing';return}
-    if(d.configured){pill.textContent='✅ Connected';pill.className='pill ok';sc.style.display='none'}
+    if(d.configured){
+      pill.textContent='✅ Connected';pill.className='pill ok';
+      if(rb && rb.style.display==='block'){sc.style.display='block'}
+      else{sc.style.display='none'}
+    }
     else{pill.textContent='⚠️ Setup needed';sc.style.display='block'}
   }catch(e){document.getElementById('pill').textContent='⚠️ Offline'}
 }
