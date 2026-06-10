@@ -190,15 +190,21 @@ def find_customer(name):
     names_list = [f"{i+1}. {c['contact_name']}" for i, c in enumerate(all_contacts)]
     names_str  = "\n".join(names_list)
 
-    prompt = f"""You are matching a WhatsApp store name to a Zoho customer list.
+    prompt = f"""You are strictly matching a WhatsApp store name to a Zoho customer list.
 
 WhatsApp name: "{name}"
 
 Zoho customers:
 {names_str}
 
-Find the best matching customer number. Consider abbreviations, partial matches, location names.
-Reply with ONLY the number (e.g. "5") or "0" if no good match exists."""
+Rules:
+- Match ONLY if the location/area name clearly matches. Example: "KFC Nizampet" should ONLY match a customer containing "NIZAMPET".
+- "KFC Nizampet" does NOT match "KFC-NACHARAM" or "KFC-MALKAJGIRI" — different locations.
+- A brand name alone (like "KFC") is NOT enough to match — location must also match.
+- If no customer has a clearly matching location or name, reply "0".
+- Do not guess or pick the closest — if unsure, reply "0".
+
+Reply with ONLY the number (e.g. "5") or "0" if no confident match exists."""
 
     r2 = requests.post(
         'https://api.groq.com/openai/v1/chat/completions',
@@ -285,29 +291,59 @@ def create_item(name, hsn_code, rate, tax_id):
         raise Exception(f"Item creation failed: {resp}")
     return item
 
-def get_next_estimate_number():
-    """Fetch the next auto-increment number from Zoho settings."""
+# In-memory cache for last used seq number — prevents back-to-back conflicts
+_last_seq = {'value': 0}
+
+def get_next_seq():
+    """Get next seq number — combines Zoho scan + in-memory cache to handle rapid creation."""
     try:
-        r = zh_get('/settings/estimates')
-        d = r.json()
-        # Try different possible field names
-        settings = d.get('estimate_settings', d)
-        next_num = (settings.get('next_number') or
-                    settings.get('estimate_next_number') or
-                    settings.get('nextNumber') or 1)
-        return int(str(next_num).strip())
+        r = zh_get('/estimates', {'sort_column': 'created_time', 'sort_order': 'D', 'per_page': 10})
+        estimates = r.json().get('estimates', [])
+        zoho_max = 0
+        for est in estimates:
+            num   = est.get('estimate_number', '')
+            parts = num.split('-')
+            if parts:
+                digits = ''.join(filter(str.isdigit, parts[-1]))
+                if digits:
+                    zoho_max = max(zoho_max, int(digits))
+        # Take the higher of Zoho's max or our cached last used
+        max_seq = max(zoho_max, _last_seq['value'])
+        return max_seq + 1 if max_seq > 0 else 1
     except Exception:
-        return None
+        # Fallback to cache if Zoho scan fails
+        return (_last_seq['value'] + 1) if _last_seq['value'] > 0 else 1
 
 def create_estimate(customer_id, customer_name, line_items):
-    # Build custom estimate number: CUSTOMER-QT-000139
-    clean_name  = customer_name.strip().upper().replace(' ', '_')
-    next_num    = get_next_estimate_number()
-    payload     = {"customer_id": customer_id, "line_items": line_items}
-    if next_num:
-        payload["estimate_number"] = f"{clean_name}-QT-{str(next_num).zfill(6)}"
-    r = zh_post('/estimates', payload)
-    return r.json()
+    # Step 1: Create estimate — let Zoho auto-generate number
+    r = zh_post('/estimates', {"customer_id": customer_id, "line_items": line_items})
+    result = r.json()
+    est = result.get('estimate', {})
+    estimate_id = est.get('estimate_id', '')
+
+    # Step 2: Rename to custom format
+    if estimate_id:
+        try:
+            seq        = get_next_seq()
+            clean_name = customer_name.strip().upper().replace(' ', '_')
+
+            for attempt in range(3):  # Retry up to 3 times if conflict
+                custom_number = f"{clean_name}-QT-{str(seq + attempt).zfill(6)}"
+                rename_r      = zh_put(f'/estimates/{estimate_id}', {
+                    "customer_id":     customer_id,
+                    "estimate_number": custom_number
+                })
+                rename_data = rename_r.json()
+                if rename_data.get('code') != 1001:
+                    # Success — update cache to this seq number
+                    _last_seq['value'] = seq + attempt
+                    break
+
+            result['estimate']['estimate_number'] = custom_number
+        except Exception:
+            pass
+
+    return result
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────
 @app.route('/')
@@ -351,6 +387,39 @@ def setup():
             'ZOHO_ORG_ID': org_id
         }
     })
+
+@app.route('/next-number')
+def next_number():
+    """Show the next quote number to use for manual creation."""
+    try:
+        # Get last estimate to find current sequence
+        r = zh_get('/estimates', {'sort_column': 'created_time', 'sort_order': 'D', 'per_page': 1})
+        estimates = r.json().get('estimates', [])
+        last_num = 1
+        if estimates:
+            last_no = estimates[0].get('estimate_number', '')
+            digits = ''.join(filter(str.isdigit, last_no.split('-')[-1]))
+            if digits:
+                last_num = int(digits) + 1
+        next_no = str(last_num).zfill(6)
+        return render_template_string("""<!DOCTYPE html><html><head>
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <style>
+          body{font-family:sans-serif;padding:24px;background:#f7f8fc;max-width:400px;margin:0 auto;text-align:center}
+          h2{color:#111;margin-bottom:6px}
+          p{color:#666;font-size:13px;margin-bottom:24px}
+          .num{font-family:monospace;font-size:28px;font-weight:800;color:#4f46e5;background:#eef2ff;padding:20px;border-radius:12px;border:2px solid #c7d2fe;margin-bottom:16px}
+          .format{font-size:13px;color:#6b7280;margin-bottom:20px}
+          button{background:#4f46e5;color:#fff;border:none;border-radius:10px;padding:14px 28px;font-size:15px;font-weight:700;cursor:pointer;width:100%}
+        </style></head><body>
+        <h2>📋 Next Quote Number</h2>
+        <p>Use this sequence number when creating a quote manually in Zoho.</p>
+        <div class="num">{{ next_no }}</div>
+        <div class="format">Format: <strong>STORENAME-QT-{{ next_no }}</strong><br>e.g. KFC-SURYAPET-QT-{{ next_no }}</div>
+        <button onclick="navigator.clipboard.writeText('{{ next_no }}').then(()=>alert('Copied!'))">Copy Number</button>
+        </body></html>""", next_no=next_no)
+    except Exception as e:
+        return f"<h3 style='font-family:sans-serif;padding:24px'>Error: {e}</h3>"
 
 @app.route('/get-tokens')
 def get_tokens():
