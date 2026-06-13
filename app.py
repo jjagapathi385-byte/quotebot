@@ -346,19 +346,27 @@ Reply with ONLY the number (e.g. "5") or "0" if no good match exists (similarity
         pass
     return None
 
-def create_item(name, hsn_code, rate, tax_id):
+def create_item(name, hsn_code, rate, tax_id, is_service=False):
     payload = {
         "name": name, "rate": rate,
-        "product_type": "goods",
+        "product_type": "service" if is_service else "goods",
         "hsn_or_sac": str(hsn_code),
-        "item_type": "inventory"
     }
+    if not is_service:
+        payload["item_type"] = "inventory"
     if tax_id:
         payload["tax_id"] = tax_id
-    r = zh_post('/items', payload)
+    r    = zh_post('/items', payload)
     resp = r.json()
     item = resp.get('item', {})
+
     if not item:
+        # Item already exists — fetch it directly instead of failing
+        if resp.get('code') == 1001 and 'already exists' in resp.get('message', ''):
+            r2    = zh_get('/items', {'search_text': name})
+            items = r2.json().get('items', [])
+            if items:
+                return items[0]
         raise Exception(f"Item creation failed: {resp}")
     return item
 
