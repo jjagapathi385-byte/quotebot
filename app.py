@@ -98,7 +98,13 @@ Message:
 
 Rules:
 1. Extract customer/store name from the first line or header
-2. For each item: name, quantity (default 1), unit_price (if total given for multiple qty, divide to get unit price)
+2. For each item: name, quantity (default 1), unit_price.
+   - If total price given for multiple qty, divide to get unit_price (e.g. "5nos 1000" → unit=200)
+   - Price may be STUCK to item name with no space — always split it:
+     "scolding7500" → name="Scolding", unit_price=7500
+     "labour charges11000" → name="Labour Charges", unit_price=11000
+     "cement12 bags 7400" → name="Cement", qty=12, unit_price=616
+   - Always separate trailing numbers as price
 3. IMPORTANT - Correct item names: fix typos, expand abbreviations, use proper industry names.
    Examples:
    - "brazing rad pipe" → "Brazing Rod Pipe"
@@ -109,6 +115,12 @@ Rules:
    - "R 32 gas" → "R32 Refrigerant Gas"
    - "led lt" → "LED Light"
    - "ac servic" → "AC Service"
+   - "scolding" → "Scaffolding"
+   - "Lappam patty" → "Lappam Putty"
+   - "birla white care putty" → "Birla White Care Putty"
+   - "paint roller.1200" → name="Paint Roller", price=1200 (period is separator not decimal)
+   - "paint 15 L litre 6300" → name="Paint", qty=1, unit_price=6300 (15L is description not qty)
+   - Any separator like period(.), dash(-), slash(/) between item and price should be treated as separator
    Always use proper English, correct spelling, full words.
 4. Assign the most accurate 8-digit HSN code. Common ones:
    LED lights/lamps=94054090, Tape=39199090, Adhesive/Fevicol/Fevibond=35069900,
@@ -138,31 +150,59 @@ Return this exact JSON:
 For notes: extract text like "Add subject- payment done", "payment pending", "urgent" etc. that is NOT an item. Just the content, not the label.
 ONLY return the JSON. Nothing else."""
 
-    r = requests.post(
-        'https://api.groq.com/openai/v1/chat/completions',
-        headers={
-            'Authorization': f'Bearer {GROQ_KEY}',
-            'Content-Type': 'application/json'
-        },
-        json={
-            'model': 'llama-3.3-70b-versatile',
-            'messages': [{'role': 'user', 'content': prompt}],
-            'temperature': 0.1
-        },
-        timeout=30
-    )
-    d = r.json()
-    if 'error' in d:
-        raise Exception(f"Groq error: {d['error']['message']}")
+    for attempt in range(3):  # Retry up to 3 times on Groq errors
+        try:
+            r = requests.post(
+                'https://api.groq.com/openai/v1/chat/completions',
+                headers={
+                    'Authorization': f'Bearer {GROQ_KEY}',
+                    'Content-Type': 'application/json'
+                },
+                json={
+                    'model': 'llama-3.3-70b-versatile',
+                    'messages': [{'role': 'user', 'content': prompt}],
+                    'temperature': 0.1
+                },
+                timeout=45
+            )
+            d = r.json()
 
-    raw = d['choices'][0]['message']['content'].strip()
-    if '```' in raw:
-        parts = raw.split('```')
-        raw = parts[1] if len(parts) > 1 else parts[0]
-        if raw.startswith('json'):
-            raw = raw[4:]
-        raw = raw.strip()
-    return json.loads(raw)
+            # Handle Groq API errors
+            if 'error' in d:
+                err_msg = d['error'].get('message', str(d['error']))
+                if 'rate' in err_msg.lower() or '429' in str(r.status_code):
+                    import time
+                    time.sleep(3)
+                    continue
+                raise Exception(f"Groq error: {err_msg}")
+
+            if 'choices' not in d:
+                raise Exception(f"Unexpected Groq response: {d}")
+
+            raw = d['choices'][0]['message']['content'].strip()
+
+            # Strip markdown fences if present
+            if '```' in raw:
+                parts = raw.split('```')
+                raw = parts[1] if len(parts) > 1 else parts[0]
+                if raw.startswith('json'):
+                    raw = raw[4:]
+                raw = raw.strip()
+
+            return json.loads(raw)
+
+        except json.JSONDecodeError as e:
+            if attempt == 2:
+                raise Exception(f"Could not parse AI response as JSON: {e}")
+            continue
+        except Exception as e:
+            if attempt == 2:
+                raise
+            import time
+            time.sleep(2)
+            continue
+
+    raise Exception("Groq API failed after 3 attempts. Please try again.")
 
 # ── ZOHO HELPERS ──────────────────────────────────────────────────────────────
 def get_gst18_tax_id():
