@@ -152,6 +152,7 @@ ONLY return the JSON. Nothing else."""
 
     import time
     models = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'qwen/qwen3-32b']
+    last_error = 'No response received'
 
     for attempt in range(4):
         model = models[min(attempt, len(models)-1)]
@@ -183,11 +184,22 @@ ONLY return the JSON. Nothing else."""
                 err_msg = d['error'].get('message', str(d['error'])) if isinstance(d['error'], dict) else str(d['error'])
                 raise Exception(f"Groq error: {err_msg}")
 
-            if 'choices' not in d:
+            if 'choices' not in d or not d['choices']:
+                last_error = str(d)[:300]
                 time.sleep(3)
                 continue
 
-            raw = d['choices'][0]['message']['content'].strip()
+            try:
+                raw = d['choices'][0]['message']['content'].strip()
+            except (KeyError, IndexError) as ke:
+                last_error = f"Parse error: {ke} in {str(d)[:200]}"
+                time.sleep(3)
+                continue
+
+            if not raw:
+                last_error = "Empty AI response"
+                time.sleep(3)
+                continue
 
             # Strip markdown fences
             if '```' in raw:
@@ -211,7 +223,7 @@ ONLY return the JSON. Nothing else."""
             time.sleep(2)
             continue
 
-    raise Exception("AI service is busy right now. Please wait 30 seconds and try again.")
+    raise Exception(f"AI service unavailable. Last error: {last_error}. Please wait 30 seconds and try again.")
 
 # ── ZOHO HELPERS ──────────────────────────────────────────────────────────────
 def get_gst18_tax_id():
