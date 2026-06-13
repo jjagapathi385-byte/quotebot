@@ -580,18 +580,21 @@ def process():
         line_items    = []
         new_items_log = []
         for item in items:
-            name        = item.get('name', '').strip()
-            qty         = float(item.get('quantity', 1))
-            unit_price  = float(item.get('unit_price', 0))
-            hsn         = item.get('hsn_code', '00000000')
+            name         = item.get('name', '').strip()
+            qty          = float(item.get('quantity', 1))
+            unit_price   = float(item.get('unit_price', 0))
+            # Support both old (hsn_code) and new (hsn_or_sac) field names
+            hsn          = item.get('hsn_or_sac', item.get('hsn_code', ''))
+            is_service   = item.get('is_service', False)
             marked_price = round(unit_price * 1.10, 2)
             existing = find_item(name)
             if existing:
                 item_id = existing['item_id']
             else:
-                created = create_item(name, hsn, marked_price, tax_id)
+                created = create_item(name, hsn, marked_price, tax_id, is_service)
                 item_id = created.get('item_id', '')
-                new_items_log.append({'name': name, 'hsn': hsn, 'rate': marked_price})
+                label   = 'SAC' if is_service else 'HSN'
+                new_items_log.append({'name': name, 'hsn': f"{label}: {hsn}" if hsn else 'Auto-assigned', 'rate': marked_price})
             line_items.append({
                 "item_id": item_id, "name": name,
                 "quantity": qty, "rate": marked_price,
