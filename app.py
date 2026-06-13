@@ -361,12 +361,23 @@ def create_item(name, hsn_code, rate, tax_id, is_service=False):
     item = resp.get('item', {})
 
     if not item:
-        # Item already exists — fetch it directly instead of failing
+        # Item already exists — fetch it and update HSN if blank
         if resp.get('code') == 1001 and 'already exists' in resp.get('message', ''):
-            r2    = zh_get('/items', {'search_text': name})
-            items = r2.json().get('items', [])
-            if items:
-                return items[0]
+            r2       = zh_get('/items', {'search_text': name})
+            existing = r2.json().get('items', [])
+            if existing:
+                ex_item = existing[0]
+                ex_hsn  = ex_item.get('hsn_or_sac', '').strip().replace('0','')
+                # Update HSN if it's blank or was 00000000
+                if not ex_hsn and hsn_code and str(hsn_code).replace('0',''):
+                    upd_payload = {
+                        "name":         ex_item.get('name', name),
+                        "rate":         ex_item.get('rate', rate),
+                        "hsn_or_sac":   str(hsn_code),
+                        "product_type": "service" if is_service else "goods"
+                    }
+                    zh_put(f'/items/{ex_item["item_id"]}', upd_payload)
+                return ex_item
         raise Exception(f"Item creation failed: {resp}")
     return item
 
@@ -810,7 +821,7 @@ async function processMessage(){
       res.className='result success';
       let ni='';
       if(d.new_items&&d.new_items.length){
-        const tags=d.new_items.map(i=>`<span class="new-tag">📦 ${i.name} <span class="hsn">HSN ${i.hsn}</span></span>`).join('');
+        const tags=d.new_items.map(i=>`<span class="new-tag">📦 ${i.name} <span class="hsn">${i.hsn}</span></span>`).join('');
         ni=`<div class="new-sec"><div class="new-title">🆕 New items added to Zoho</div>${tags}</div>`;
       }
       res.innerHTML=`<div class="result-title" style="color:#065F46">✅ Quotation Created!</div>
