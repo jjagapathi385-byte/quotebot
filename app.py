@@ -122,16 +122,20 @@ Rules:
 Return this exact JSON:
 {{
   "customer_name": "name here",
+  "is_interstate": false,
+  "notes": "any subject/remarks/note text found in message, empty string if none",
   "items": [
     {{
       "name": "item name",
       "quantity": 1,
       "unit_price": 0.0,
-      "hsn_code": "12345678"
+      "hsn_or_sac": "12345678",
+      "is_service": false
     }}
   ]
 }}
 
+For notes: extract text like "Add subject- payment done", "payment pending", "urgent" etc. that is NOT an item. Just the content, not the label.
 ONLY return the JSON. Nothing else."""
 
     r = requests.post(
@@ -190,21 +194,15 @@ def find_customer(name):
     names_list = [f"{i+1}. {c['contact_name']}" for i, c in enumerate(all_contacts)]
     names_str  = "\n".join(names_list)
 
-    prompt = f"""You are strictly matching a WhatsApp store name to a Zoho customer list.
+    prompt = f"""You are matching a WhatsApp store name to a Zoho customer list.
 
 WhatsApp name: "{name}"
 
 Zoho customers:
 {names_str}
 
-Rules:
-- Match ONLY if the location/area name clearly matches. Example: "KFC Nizampet" should ONLY match a customer containing "NIZAMPET".
-- "KFC Nizampet" does NOT match "KFC-NACHARAM" or "KFC-MALKAJGIRI" — different locations.
-- A brand name alone (like "KFC") is NOT enough to match — location must also match.
-- If no customer has a clearly matching location or name, reply "0".
-- Do not guess or pick the closest — if unsure, reply "0".
-
-Reply with ONLY the number (e.g. "5") or "0" if no confident match exists."""
+Find the best matching customer number. Consider abbreviations, partial matches, location names.
+Reply with ONLY the number (e.g. "5") or "0" if no good match exists."""
 
     r2 = requests.post(
         'https://api.groq.com/openai/v1/chat/completions',
@@ -294,8 +292,18 @@ def create_item(name, hsn_code, rate, tax_id):
 # In-memory cache for last used seq number — prevents back-to-back conflicts
 _last_seq = {'value': 0}
 
+def get_default_notes():
+    """Fetch default customer notes from Zoho estimate settings."""
+    try:
+        r = zh_get('/settings/estimates')
+        d = r.json()
+        settings = d.get('estimate_settings', d)
+        return settings.get('notes', '').strip()
+    except Exception:
+        return ''
+
 def get_next_seq():
-    """Get next seq number — combines Zoho scan + in-memory cache to handle rapid creation."""
+    """Get next seq — combines Zoho scan + in-memory cache."""
     try:
         r = zh_get('/estimates', {'sort_column': 'created_time', 'sort_order': 'D', 'per_page': 10})
         estimates = r.json().get('estimates', [])
@@ -307,41 +315,49 @@ def get_next_seq():
                 digits = ''.join(filter(str.isdigit, parts[-1]))
                 if digits:
                     zoho_max = max(zoho_max, int(digits))
-        # Take the higher of Zoho's max or our cached last used
         max_seq = max(zoho_max, _last_seq['value'])
         return max_seq + 1 if max_seq > 0 else 1
     except Exception:
-        # Fallback to cache if Zoho scan fails
         return (_last_seq['value'] + 1) if _last_seq['value'] > 0 else 1
 
-def create_estimate(customer_id, customer_name, line_items):
-    # Step 1: Create estimate — let Zoho auto-generate number
-    r = zh_post('/estimates', {"customer_id": customer_id, "line_items": line_items})
-    result = r.json()
-    est = result.get('estimate', {})
-    estimate_id = est.get('estimate_id', '')
+def create_estimate(customer_id, customer_name, line_items, notes=''):
+    """Create estimate with correct number directly — works in both auto and manual Zoho mode."""
+    clean_name = customer_name.strip().upper().replace(' ', '_')
 
-    # Step 2: Rename to custom format
-    if estimate_id:
-        try:
-            seq        = get_next_seq()
-            clean_name = customer_name.strip().upper().replace(' ', '_')
+    for attempt in range(5):  # Retry up to 5 times on conflict
+        seq           = get_next_seq() + attempt
+        custom_number = f"{clean_name}-QT-{str(seq).zfill(6)}"
 
-            for attempt in range(3):  # Retry up to 3 times if conflict
-                custom_number = f"{clean_name}-QT-{str(seq + attempt).zfill(6)}"
-                rename_r      = zh_put(f'/estimates/{estimate_id}', {
-                    "customer_id":     customer_id,
-                    "estimate_number": custom_number
-                })
-                rename_data = rename_r.json()
-                if rename_data.get('code') != 1001:
-                    # Success — update cache to this seq number
-                    _last_seq['value'] = seq + attempt
-                    break
+        payload = {
+            "customer_id":     customer_id,
+            "estimate_number": custom_number,
+            "line_items":      line_items,
+        }
+        # Fetch default Zoho notes and append new note on next line
+        default_note = get_default_notes()
+        if notes and notes.strip():
+            combined = f"{default_note}\n{notes.strip()}" if default_note else notes.strip()
+        else:
+            combined = default_note
+        if combined:
+            payload["notes"] = combined
 
-            result['estimate']['estimate_number'] = custom_number
-        except Exception:
-            pass
+        r      = zh_post('/estimates', payload)
+        result = r.json()
+
+        if result.get('estimate'):
+            # Success — update seq cache
+            _last_seq['value'] = seq
+            return result
+
+        code = result.get('code', 0)
+        if code == 1001:
+            # Duplicate number — try next
+            _last_seq['value'] = seq
+            continue
+        else:
+            # Other error — return as-is
+            return result
 
     return result
 
@@ -500,7 +516,8 @@ def process():
                 "quantity": qty, "rate": marked_price,
                 **({"tax_id": tax_id} if tax_id else {})
             })
-        result = create_estimate(customer['contact_id'], customer.get('contact_name', customer_name), line_items)
+        notes  = parsed.get('notes', '')
+        result = create_estimate(customer['contact_id'], customer.get('contact_name', customer_name), line_items, notes)
         est    = result.get('estimate')
         if est:
             return jsonify({
