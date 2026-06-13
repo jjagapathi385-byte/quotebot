@@ -275,7 +275,13 @@ Reply with ONLY the number (e.g. "5") or "0" if no good match exists."""
         },
         timeout=30
     )
-    result = r2.json()['choices'][0]['message']['content'].strip()
+    try:
+        d2 = r2.json()
+        if 'choices' not in d2 or not d2['choices']:
+            return None
+        result = d2['choices'][0]['message']['content'].strip()
+    except Exception:
+        return None
 
     try:
         idx = int(''.join(filter(str.isdigit, result))) - 1
@@ -324,7 +330,13 @@ Reply with ONLY the number (e.g. "5") or "0" if no good match exists (similarity
         },
         timeout=30
     )
-    result = r2.json()['choices'][0]['message']['content'].strip()
+    try:
+        d2 = r2.json()
+        if 'choices' not in d2 or not d2['choices']:
+            return None
+        result = d2['choices'][0]['message']['content'].strip()
+    except Exception:
+        return None
 
     try:
         idx = int(''.join(filter(str.isdigit, result))) - 1
