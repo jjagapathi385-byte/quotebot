@@ -87,6 +87,10 @@ def zh_put(path, data):
 
 # ── GEMINI PARSE ──────────────────────────────────────────────────────────────
 def parse_with_gemini(message):
+    # Trim message to avoid token limit issues with very long messages
+    if len(message) > 3000:
+        message = message[:3000]
+
     prompt = f"""You are a quotation parser for an Indian hardware/electrical supplies business.
 
 Parse this WhatsApp quotation message and return ONLY a valid JSON object. No markdown, no explanation.
