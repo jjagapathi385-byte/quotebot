@@ -151,7 +151,7 @@ For notes: extract text like "Add subject- payment done", "payment pending", "ur
 ONLY return the JSON. Nothing else."""
 
     import time
-    models = ['llama-3.3-70b-versatile', 'llama3-70b-8192', 'mixtral-8x7b-32768']
+    models = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'qwen/qwen3-32b']
 
     for attempt in range(4):
         model = models[min(attempt, len(models)-1)]
