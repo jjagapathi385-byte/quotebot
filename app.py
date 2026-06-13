@@ -150,7 +150,11 @@ Return this exact JSON:
 For notes: extract text like "Add subject- payment done", "payment pending", "urgent" etc. that is NOT an item. Just the content, not the label.
 ONLY return the JSON. Nothing else."""
 
-    for attempt in range(3):  # Retry up to 3 times on Groq errors
+    import time
+    models = ['llama-3.3-70b-versatile', 'llama3-70b-8192', 'mixtral-8x7b-32768']
+
+    for attempt in range(4):
+        model = models[min(attempt, len(models)-1)]
         try:
             r = requests.post(
                 'https://api.groq.com/openai/v1/chat/completions',
@@ -159,29 +163,33 @@ ONLY return the JSON. Nothing else."""
                     'Content-Type': 'application/json'
                 },
                 json={
-                    'model': 'llama-3.3-70b-versatile',
+                    'model': model,
                     'messages': [{'role': 'user', 'content': prompt}],
-                    'temperature': 0.1
+                    'temperature': 0.1,
+                    'max_tokens': 2000
                 },
-                timeout=45
+                timeout=60
             )
             d = r.json()
 
-            # Handle Groq API errors
+            # Rate limit — wait and retry with next model
+            if r.status_code == 429 or (isinstance(d.get('error'), dict) and 'rate' in str(d['error']).lower()):
+                wait = 5 * (attempt + 1)
+                time.sleep(wait)
+                continue
+
+            # Other API error
             if 'error' in d:
-                err_msg = d['error'].get('message', str(d['error']))
-                if 'rate' in err_msg.lower() or '429' in str(r.status_code):
-                    import time
-                    time.sleep(3)
-                    continue
+                err_msg = d['error'].get('message', str(d['error'])) if isinstance(d['error'], dict) else str(d['error'])
                 raise Exception(f"Groq error: {err_msg}")
 
             if 'choices' not in d:
-                raise Exception(f"Unexpected Groq response: {d}")
+                time.sleep(3)
+                continue
 
             raw = d['choices'][0]['message']['content'].strip()
 
-            # Strip markdown fences if present
+            # Strip markdown fences
             if '```' in raw:
                 parts = raw.split('```')
                 raw = parts[1] if len(parts) > 1 else parts[0]
@@ -191,18 +199,19 @@ ONLY return the JSON. Nothing else."""
 
             return json.loads(raw)
 
-        except json.JSONDecodeError as e:
-            if attempt == 2:
-                raise Exception(f"Could not parse AI response as JSON: {e}")
+        except json.JSONDecodeError:
+            time.sleep(2)
+            continue
+        except requests.exceptions.Timeout:
+            time.sleep(3)
             continue
         except Exception as e:
-            if attempt == 2:
+            if 'Groq error' in str(e):
                 raise
-            import time
             time.sleep(2)
             continue
 
-    raise Exception("Groq API failed after 3 attempts. Please try again.")
+    raise Exception("AI service is busy right now. Please wait 30 seconds and try again.")
 
 # ── ZOHO HELPERS ──────────────────────────────────────────────────────────────
 def get_gst18_tax_id():
