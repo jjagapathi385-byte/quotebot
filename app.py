@@ -329,7 +329,7 @@ Reply with ONLY the number (e.g. "5") or "0" if no good match exists (similarity
         'https://api.groq.com/openai/v1/chat/completions',
         headers={'Authorization': f'Bearer {GROQ_KEY}', 'Content-Type': 'application/json'},
         json={
-            'model': 'llama-3.3-70b-versatile',
+            'model': 'meta-llama/Llama-2-13b-chat-hf',
             'messages': [{'role': 'user', 'content': prompt}],
             'temperature': 0
         },
