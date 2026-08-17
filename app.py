@@ -155,7 +155,7 @@ For notes: extract text like "Add subject- payment done", "payment pending", "ur
 ONLY return the JSON. Nothing else."""
 
     import time
-    models = ['meta-llama/llama-3.3-70b-versatile', 'qwen/qwen3-32b', 'llama-3.1-8b-instant'] 
+    models = ['meta-llama/Llama-2-13b-chat-hf', 'qwen/qwen3-32b', 'llama-3.1-8b-instant'] 
     last_error = 'No response received'
 
     for attempt in range(4):
