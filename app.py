@@ -272,9 +272,11 @@ Reply with ONLY the number (e.g. "5") or "0" if no good match exists."""
     r2 = requests.post(
         'https://api.groq.com/openai/v1/chat/completions',
         headers={'Authorization': f'Bearer {GROQ_KEY}', 'Content-Type': 'application/json'},
-        json={'model': ['meta-llama/llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'qwen/qwen3-32b'][min(attempt, 2)],
-      'messages': [{'role': 'user', 'content': prompt}],
-      'temperature': 0, 'max_tokens': 10},
+        json={
+            'model': '['meta-llama/llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'qwen/qwen3-32b'][min(attempt, 2)]',
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': 0
+        }
     ,
         timeout=30
     )
